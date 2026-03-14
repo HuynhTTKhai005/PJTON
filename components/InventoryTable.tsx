@@ -77,8 +77,31 @@ function formatDisplay(value: number) {
   return Number(value).toFixed(3);
 }
 
+function formatDateLocal(date: Date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 function todayDate() {
-  return new Date().toISOString().slice(0, 10);
+  return formatDateLocal(new Date());
+}
+
+function addDays(dateStr: string, days: number) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  date.setDate(date.getDate() + days);
+  return formatDateLocal(date);
+}
+
+function displayDate(dateStr: string) {
+  const [y, m, d] = dateStr.split("-");
+  return `${d}/${m}/${y}`;
+}
+
+function isWithinRange(dateStr: string, min: string, max: string) {
+  return dateStr >= min && dateStr <= max;
 }
 
 function hydrateRows(rows: InventoryRow[], previousRows?: InventoryRow[]) {
@@ -128,13 +151,16 @@ export default function InventoryTable() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [exporting, setExporting] = useState(false);
-  const tableRef = useRef<HTMLDivElement | null>(null);
+  const tableRef = useRef<HTMLTableElement | null>(null);
+  const dateInputRef = useRef<HTMLInputElement | null>(null);
   const [calcOpen, setCalcOpen] = useState(false);
   const [calcExpr, setCalcExpr] = useState("0");
   const [calcTarget, setCalcTarget] = useState<{
     index: number;
     key: keyof RowState;
   } | null>(null);
+  const minDate = addDays(todayDate(), -6);
+  const maxDate = addDays(todayDate(), 1);
 
   useEffect(() => {
     let active = true;
@@ -144,7 +170,12 @@ export default function InventoryTable() {
       setSaveError(null);
 
       if (typeof window !== "undefined" && !localStorage.getItem(RESET_KEY)) {
-        localStorage.removeItem(STORAGE_KEY);
+        const keysToRemove: string[] = [];
+        for (let i = 0; i < localStorage.length; i += 1) {
+          const key = localStorage.key(i);
+          if (key && key.startsWith(STORAGE_KEY)) keysToRemove.push(key);
+        }
+        keysToRemove.forEach((key) => localStorage.removeItem(key));
         localStorage.setItem(RESET_KEY, "1");
         if (active) {
           setDate(todayDate());
@@ -155,12 +186,11 @@ export default function InventoryTable() {
       }
 
       try {
-        const res = await fetch(`/api/inventory?date=${todayDate()}`);
+        const res = await fetch(`/api/inventory?date=${date}`);
         if (!res.ok) throw new Error("Failed to fetch");
         const data = (await res.json()) as InventoryPayload;
         if (!active) return;
 
-        setDate(data.date);
         setRows(hydrateRows(data.rows, data.previousDateRows));
         setLoading(false);
         return;
@@ -168,19 +198,28 @@ export default function InventoryTable() {
         // fallback to localStorage
       }
 
-      const local = typeof window !== "undefined" ? localStorage.getItem(STORAGE_KEY) : null;
+      const localKey = `${STORAGE_KEY}-${date}`;
+      const prevKey = `${STORAGE_KEY}-${addDays(date, -1)}`;
+      const local = typeof window !== "undefined" ? localStorage.getItem(localKey) : null;
+      const previousLocal =
+        typeof window !== "undefined" ? localStorage.getItem(prevKey) : null;
       if (local) {
         const parsed = JSON.parse(local) as InventoryPayload;
         if (active) {
-          setDate(parsed.date ?? todayDate());
-          setRows(hydrateRows(parsed.rows ?? []));
+          const previousRows = previousLocal
+            ? (JSON.parse(previousLocal) as InventoryPayload).rows
+            : [];
+          setRows(hydrateRows(parsed.rows ?? [], previousRows));
           setLoading(false);
         }
         return;
       }
 
       if (active) {
-        setRows(hydrateRows([]));
+        const previousRows = previousLocal
+          ? (JSON.parse(previousLocal) as InventoryPayload).rows
+          : [];
+        setRows(hydrateRows([], previousRows));
         setLoading(false);
       }
     }
@@ -189,12 +228,12 @@ export default function InventoryTable() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [date]);
 
   useEffect(() => {
     if (rows.length === 0) return;
     const payload = mapToPayload(date, rows);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    localStorage.setItem(`${STORAGE_KEY}-${date}`, JSON.stringify(payload));
   }, [rows, date]);
 
   useEffect(() => {
@@ -295,8 +334,71 @@ export default function InventoryTable() {
     if (!calcTarget) return;
     const result = safeEvalExpression(calcExpr);
     if (result === null) return;
-    updateRow(calcTarget.index, calcTarget.key, formatDisplay(result));
+    const value = formatDisplay(result);
+    const { index, key } = calcTarget;
+    const product = rows[index]?.product;
+
+    const nextRows = rows.map((row, i) =>
+      i === index ? { ...row, [key]: value } : row
+    );
+    setRows(nextRows);
+
+    if (product && (key === "ending" || key === "opening")) {
+      syncAdjacentDates(nextRows, product, key, value);
+    }
     setCalcOpen(false);
+  }
+
+  function syncAdjacentDates(
+    currentRows: RowState[],
+    product: string,
+    key: "ending" | "opening",
+    value: string
+  ) {
+    if (typeof window === "undefined") return;
+
+    if (key === "ending") {
+      const nextDate = addDays(date, 1);
+      if (isWithinRange(nextDate, minDate, maxDate)) {
+        const nextKey = `${STORAGE_KEY}-${nextDate}`;
+        const existing = localStorage.getItem(nextKey);
+        const previousRows = mapToPayload(date, currentRows).rows;
+        const baseRows = existing
+          ? hydrateRows((JSON.parse(existing) as InventoryPayload).rows ?? [], previousRows)
+          : hydrateRows([], previousRows);
+        const updatedRows = baseRows.map((row) =>
+          row.product === product ? { ...row, opening: value } : row
+        );
+        const payload = mapToPayload(nextDate, updatedRows);
+        localStorage.setItem(nextKey, JSON.stringify(payload));
+        void fetch("/api/inventory", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+      }
+    }
+
+    if (key === "opening") {
+      const prevDate = addDays(date, -1);
+      if (isWithinRange(prevDate, minDate, maxDate)) {
+        const prevKey = `${STORAGE_KEY}-${prevDate}`;
+        const existing = localStorage.getItem(prevKey);
+        const baseRows = existing
+          ? hydrateRows((JSON.parse(existing) as InventoryPayload).rows ?? [])
+          : hydrateRows([]);
+        const updatedRows = baseRows.map((row) =>
+          row.product === product ? { ...row, ending: value } : row
+        );
+        const payload = mapToPayload(prevDate, updatedRows);
+        localStorage.setItem(prevKey, JSON.stringify(payload));
+        void fetch("/api/inventory", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+      }
+    }
   }
 
   function clearAllNumbers() {
@@ -317,10 +419,19 @@ export default function InventoryTable() {
     if (!tableRef.current) return;
     setExporting(true);
     try {
-      const dataUrl = await toPng(tableRef.current, {
+      const node = tableRef.current;
+      const width = node.scrollWidth;
+      const height = node.scrollHeight;
+      const dataUrl = await toPng(node, {
         cacheBust: true,
         pixelRatio: 2,
-        backgroundColor: "#fff7ed"
+        backgroundColor: "#fff7ed",
+        width,
+        height,
+        style: {
+          width: `${width}px`,
+          height: `${height}px`
+        }
       });
       const link = document.createElement("a");
       link.download = `ton-kho-${date}.png`;
@@ -344,14 +455,71 @@ export default function InventoryTable() {
   return (
     <section className="space-y-3">
       <div className="flex flex-col gap-2 text-xs text-slate-600 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3">
-          <span>Ngày: {date}</span>
-          <input
-            className="h-10 w-60 rounded-md border border-orange-200 px-3 text-base outline-none focus:ring-2 focus:ring-orange-300"
-            placeholder="Tìm sản phẩm..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2">
+            <button
+              className="rounded-md border border-orange-200 bg-white px-2 py-1 text-xs"
+              type="button"
+              onClick={() =>
+                setDate((prev) => {
+                  const next = addDays(prev || todayDate(), -1);
+                  return isWithinRange(next, minDate, maxDate) ? next : prev;
+                })
+              }
+            >
+              ←
+            </button>
+            <div className="relative">
+              <input
+                className="h-10 w-36 rounded-md border border-orange-200 px-3 text-base outline-none focus:ring-2 focus:ring-orange-300"
+                type="text"
+                readOnly
+                value={displayDate(date)}
+                onClick={() => dateInputRef.current?.showPicker?.()}
+              />
+              <input
+                ref={dateInputRef}
+                className="absolute inset-0 h-10 w-36 opacity-0"
+                type="date"
+                value={date}
+                min={minDate}
+                max={maxDate}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setDate(isWithinRange(next, minDate, maxDate) ? next : date);
+                }}
+              />
+            </div>
+            <button
+              className="rounded-md border border-orange-200 bg-white px-2 py-1 text-xs"
+              type="button"
+              onClick={() =>
+                setDate((prev) => {
+                  const next = addDays(prev || todayDate(), 1);
+                  return isWithinRange(next, minDate, maxDate) ? next : prev;
+                })
+              }
+            >
+              →
+            </button>
+          </div>
+          <div className="relative">
+            <input
+              className="h-10 w-60 rounded-md border border-orange-200 px-3 pr-9 text-base outline-none focus:ring-2 focus:ring-orange-300"
+              placeholder="Tìm sản phẩm..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+            {searchTerm && (
+              <button
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400"
+                type="button"
+                onClick={() => setSearchTerm("")}
+              >
+                ×
+              </button>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-3">
           <button
@@ -362,13 +530,6 @@ export default function InventoryTable() {
           >
             {exporting ? "Đang xuất ảnh..." : "Xuất ảnh"}
           </button>
-          <button
-            className="rounded-md border border-orange-300 bg-orange-100 px-3 py-1 text-xs text-orange-700"
-            type="button"
-            onClick={clearAllNumbers}
-          >
-            Xóa dữ liệu số
-          </button>
           <span>
             {saving ? "Đang lưu…" : saved ? "Đã lưu" : ""}
             {saveError ? ` ${saveError}` : ""}
@@ -376,19 +537,28 @@ export default function InventoryTable() {
         </div>
       </div>
 
-      <div ref={tableRef} className="overflow-x-auto rounded-lg border border-orange-200 bg-white">
-        <table className="min-w-[900px] w-full border-collapse text-sm">
-          <thead className="bg-orangeStrong text-white">
+      <div className="overflow-x-auto rounded-lg border border-orange-200 bg-white">
+        <table
+          ref={tableRef}
+          className="min-w-[900px] w-full border-separate border-spacing-0 text-sm"
+        >
+          <thead className="sticky top-0 z-30 bg-orangeStrong text-white">
             <tr>
-              <th className="sticky left-0 z-20 bg-orangeStrong px-3 py-2 text-left">Sản phẩm</th>
-              <th className="bg-orangeMid px-3 py-2 text-left">Tồn cuối ngày (5)</th>
-              <th className="px-3 py-2 text-left">Bán thực tế (6)</th>
-              <th className="px-3 py-2 text-left">RK (7)</th>
-              <th className="px-3 py-2 text-left">Chênh lệch (8)</th>
-              <th className="bg-orangeMid px-3 py-2 text-left">Tồn đầu ngày (1)</th>
-              <th className="px-3 py-2 text-left">Nhập (2)</th>
-              <th className="px-3 py-2 text-left">Xuất (3)</th>
-              <th className="px-3 py-2 text-left">Hủy (4)</th>
+              <th className="sticky left-0 top-0 z-40 bg-orangeStrong px-3 py-2 text-left">
+                Sản phẩm
+              </th>
+              <th className="sticky top-0 z-30 bg-orangeMid px-3 py-2 text-left">
+                Tồn cuối ngày (5)
+              </th>
+              <th className="sticky top-0 z-30 px-3 py-2 text-left">Bán thực tế (6)</th>
+              <th className="sticky top-0 z-30 px-3 py-2 text-left">RK (7)</th>
+              <th className="sticky top-0 z-30 px-3 py-2 text-left">Chênh lệch (8)</th>
+              <th className="sticky top-0 z-30 bg-orangeMid px-3 py-2 text-left">
+                Tồn đầu ngày (1)
+              </th>
+              <th className="sticky top-0 z-30 px-3 py-2 text-left">Nhập (2)</th>
+              <th className="sticky top-0 z-30 px-3 py-2 text-left">Xuất (3)</th>
+              <th className="sticky top-0 z-30 px-3 py-2 text-left">Hủy (4)</th>
             </tr>
           </thead>
           <tbody>
@@ -552,6 +722,16 @@ export default function InventoryTable() {
           </div>
         </div>
       )}
+
+      <div className="flex justify-end pt-2">
+        <button
+          className="rounded-md border border-orange-300 bg-orange-100 px-3 py-1 text-xs text-orange-700"
+          type="button"
+          onClick={clearAllNumbers}
+        >
+          Xóa dữ liệu số
+        </button>
+      </div>
 
       <div className="pt-2 text-center text-xs text-slate-500">
         Bản quyền © Huỳnh Trần Tiến Khải
