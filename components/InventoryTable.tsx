@@ -202,6 +202,20 @@ export default function InventoryTable() {
     );
   }
 
+  function clearAllNumbers() {
+    setRows((prev) =>
+      prev.map((row) => ({
+        ...row,
+        opening: 0,
+        importQty: "0.000",
+        exportQty: "0.000",
+        destroyed: "0.000",
+        ending: "0.000",
+        plannedSold: "0.000"
+      }))
+    );
+  }
+
   if (loading) {
     return (
       <div className="rounded-lg border border-orange-200 bg-white p-4 text-sm text-slate-600">
@@ -214,10 +228,19 @@ export default function InventoryTable() {
     <section className="space-y-3">
       <div className="flex items-center justify-between text-xs text-slate-600">
         <span>Ngày: {date}</span>
-        <span>
-          {saving ? "Đang lưu…" : saved ? "Đã lưu" : ""}
-          {saveError ? ` ${saveError}` : ""}
-        </span>
+        <div className="flex items-center gap-3">
+          <button
+            className="rounded-md border border-orange-300 bg-orange-100 px-3 py-1 text-xs text-orange-700"
+            type="button"
+            onClick={clearAllNumbers}
+          >
+            Xóa dữ liệu số
+          </button>
+          <span>
+            {saving ? "Đang lưu…" : saved ? "Đã lưu" : ""}
+            {saveError ? ` ${saveError}` : ""}
+          </span>
+        </div>
       </div>
 
       <div className="overflow-x-auto rounded-lg border border-orange-200 bg-white">
