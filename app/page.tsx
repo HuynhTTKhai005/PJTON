@@ -2,7 +2,7 @@
 
 export default function HomePage() {
   return (
-    <main className="mx-auto max-w-5xl px-3 py-4">
+    <main className="mx-auto max-w-[1600px] px-3 py-4 sm:px-4 lg:px-6">
       <header className="mb-4">
         <h1 className="text-xl font-semibold text-orange-600">Kiểm kê tồn kho hằng ngày</h1>
         <p className="text-sm text-slate-600">
