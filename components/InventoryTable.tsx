@@ -105,6 +105,15 @@ function parseOptionalValue(value: string) {
   return Number.isFinite(num) ? num : null;
 }
 
+function parseOptionalExportValue(value: string) {
+  const trimmed = value.trim();
+  if (trimmed === "" || trimmed === "0" || trimmed === "0.000" || trimmed === "0.00") {
+    return null;
+  }
+  const num = Number(trimmed);
+  return Number.isFinite(num) ? num : null;
+}
+
 function shortenProductName(name: string, maxLength: number) {
   if (name.length <= maxLength) return name;
   return `${name.slice(0, maxLength)}...`;
@@ -694,12 +703,12 @@ export default function InventoryTable() {
       });
 
       rows.forEach((row, index) => {
-        const opening = parseOptionalValue(row.opening);
-        const importQty = parseOptionalValue(row.importQty);
-        const exportQty = parseOptionalValue(row.exportQty);
-        const destroyed = parseOptionalValue(row.destroyed);
-        const ending = parseOptionalValue(row.ending);
-        const plannedSold = parseOptionalValue(row.plannedSold);
+        const opening = parseOptionalExportValue(row.opening);
+        const importQty = parseOptionalExportValue(row.importQty);
+        const exportQty = parseOptionalExportValue(row.exportQty);
+        const destroyed = parseOptionalExportValue(row.destroyed);
+        const ending = parseOptionalExportValue(row.ending);
+        const plannedSold = parseOptionalExportValue(row.plannedSold);
 
         const actualSold =
           opening !== null ||
