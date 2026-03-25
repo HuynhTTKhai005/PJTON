@@ -98,6 +98,13 @@ function normalizeCode(value: string) {
   return value.trim();
 }
 
+function parseOptionalValue(value: string) {
+  const trimmed = value.trim();
+  if (trimmed === "") return null;
+  const num = Number(trimmed);
+  return Number.isFinite(num) ? num : null;
+}
+
 function shortenProductName(name: string, maxLength: number) {
   if (name.length <= maxLength) return name;
   return `${name.slice(0, maxLength)}...`;
@@ -189,6 +196,7 @@ export default function InventoryTable() {
   const [searchTerm, setSearchTerm] = useState("");
   const [exporting, setExporting] = useState(false);
   const [exportingExcel, setExportingExcel] = useState(false);
+  const tableScrollRef = useRef<HTMLDivElement | null>(null);
   const tableRef = useRef<HTMLTableElement | null>(null);
   const dateInputRef = useRef<HTMLInputElement | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -274,6 +282,43 @@ export default function InventoryTable() {
   }, [rows, date]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!tableScrollRef.current) return;
+
+    const scrollContainer = tableScrollRef.current;
+    const isMobile = window.innerWidth < 640;
+
+    if (isMobile) {
+      // Keep sticky STT + Tên vật tư visible and reveal T. CUỐI by default.
+      scrollContainer.scrollLeft = 96;
+    } else {
+      scrollContainer.scrollLeft = 0;
+    }
+  }, [loading]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handleBeforeUnload = () => {
+      flushLocalSnapshot(date, rows);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flushLocalSnapshot(date, rows);
+      }
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [date, rows]);
+
+  useEffect(() => {
     if (rows.length === 0) return;
     setSaving(true);
     setSaved(false);
@@ -355,6 +400,11 @@ export default function InventoryTable() {
       localStorage.setItem(`${STORAGE_KEY}-${nextDate}`, JSON.stringify(normalizedNext));
       carryRows = normalizedNext.rows;
     }
+  }
+
+  function flushLocalSnapshot(targetDate: string, currentRows: RowState[]) {
+    if (currentRows.length === 0) return;
+    saveLocalCarryForward(targetDate, currentRows);
   }
 
   function updateRow(index: number, key: keyof RowState, value: string) {
@@ -644,14 +694,25 @@ export default function InventoryTable() {
       });
 
       rows.forEach((row, index) => {
-        const opening = parseValue(row.opening);
-        const importQty = parseValue(row.importQty);
-        const exportQty = parseValue(row.exportQty);
-        const destroyed = parseValue(row.destroyed);
-        const ending = parseValue(row.ending);
-        const plannedSold = parseValue(row.plannedSold);
-        const actualSold = opening + importQty - exportQty - destroyed - ending;
-        const difference = actualSold - plannedSold;
+        const opening = parseOptionalValue(row.opening);
+        const importQty = parseOptionalValue(row.importQty);
+        const exportQty = parseOptionalValue(row.exportQty);
+        const destroyed = parseOptionalValue(row.destroyed);
+        const ending = parseOptionalValue(row.ending);
+        const plannedSold = parseOptionalValue(row.plannedSold);
+
+        const actualSold =
+          opening !== null ||
+          importQty !== null ||
+          exportQty !== null ||
+          destroyed !== null ||
+          ending !== null
+            ? (opening ?? 0) + (importQty ?? 0) - (exportQty ?? 0) - (destroyed ?? 0) - (ending ?? 0)
+            : null;
+        const difference =
+          actualSold !== null || plannedSold !== null
+            ? (actualSold ?? 0) - (plannedSold ?? 0)
+            : null;
 
         worksheet.addRow([
           index + 1,
@@ -676,12 +737,13 @@ export default function InventoryTable() {
 
       for (let rowNumber = 4; rowNumber <= tableEndRow; rowNumber += 1) {
         const row = worksheet.getRow(rowNumber);
+        row.height = 25;
         row.getCell(1).alignment = { horizontal: "center", vertical: "middle" };
         row.getCell(2).alignment = { horizontal: "left", vertical: "middle", wrapText: true };
         row.getCell(3).alignment = { horizontal: "center", vertical: "middle" };
 
         for (let col = 4; col <= 11; col += 1) {
-          row.getCell(col).numFmt = '[=0]0;#,##0.000';
+          row.getCell(col).numFmt = "00.00";
           row.getCell(col).alignment = { horizontal: "right", vertical: "middle" };
         }
       }
@@ -864,12 +926,15 @@ export default function InventoryTable() {
         </div>
       </div>
 
-      <div className="overflow-x-auto rounded-lg border border-orange-200 bg-white">
+      <div
+        ref={tableScrollRef}
+        className="overflow-x-auto rounded-lg border border-orange-200 bg-white"
+      >
         <table ref={tableRef} className="min-w-[1100px] w-full border-separate border-spacing-0 text-sm">
           <thead className="sticky top-0 z-30 bg-orangeStrong text-white">
             <tr>
-              <th className="sticky left-0 top-0 z-50 w-14 bg-orangeStrong px-3 py-2 text-left">STT</th>
-              <th className="sticky left-14 top-0 z-40 bg-orangeStrong px-3 py-2 text-left">Tên vật tư</th>
+              <th className="top-0 z-30 w-14 bg-orangeStrong px-3 py-2 text-left">STT</th>
+              <th className="sticky left-0 top-0 z-40 bg-orangeStrong px-3 py-2 text-left">Tên vật tư</th>
               <th className="sticky top-0 z-30 px-3 py-2 text-left">Đvt</th>
               <th className="sticky top-0 z-30 bg-orangeMid px-3 py-2 text-left">T. CUỐI</th>
               <th className="sticky top-0 z-30 px-3 py-2 text-left">SB THỰC TẾ</th>
@@ -884,8 +949,8 @@ export default function InventoryTable() {
           <tbody>
             {filteredRows.map(({ row, index }) => (
               <tr key={`${row.id}-${index}`} className="border-t border-orange-100">
-                <td className="sticky left-0 z-20 bg-orange-50 px-3 py-2 text-center font-medium">{index + 1}</td>
-                <td className="sticky left-14 z-10 bg-orange-50 px-3 py-2 font-medium" title={`${row.product}${row.productCode ? ` - ${row.productCode}` : ""}`}>
+                <td className="px-3 py-2 text-center font-medium">{index + 1}</td>
+                <td className="sticky left-0 z-10 bg-orange-50 px-3 py-2 font-medium" title={`${row.product}${row.productCode ? ` - ${row.productCode}` : ""}`}>
                   <div className="sm:hidden">
                     <div>{shortenProductName(row.product, 10)}</div>
                     <div className="text-[10px] font-normal text-slate-500">{row.productCode || "N/A"}</div>
@@ -960,46 +1025,101 @@ export default function InventoryTable() {
 
       {calcOpen && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-3">
-          <div className="w-full max-w-sm rounded-2xl bg-white p-4 shadow-lg">
-            <div className="mb-2 flex items-center justify-between">
-              <div className="text-sm font-medium text-slate-700">Máy tính</div>
-              <button className="text-sm text-slate-500" type="button" onClick={() => setCalcOpen(false)}>
+          <div className="w-full max-w-sm rounded-[28px] border border-orange-200 bg-gradient-to-b from-orange-50 to-white p-4 shadow-[0_24px_60px_rgba(0,0,0,0.18)]">
+            <div className="mb-3 flex items-center justify-between">
+              <div>
+                <div className="text-sm font-semibold tracking-wide text-slate-700">Máy tính</div>
+                <div className="text-xs text-slate-500">Chạm để nhập nhanh</div>
+              </div>
+              <button
+                className="rounded-full border border-orange-200 bg-white px-3 py-1 text-sm text-slate-500 transition active:scale-95"
+                type="button"
+                onClick={() => setCalcOpen(false)}>
                 Đóng
               </button>
             </div>
-            <div className="mb-3 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-right text-lg font-semibold text-slate-800">{calcExpr}</div>
+
+            <div className="mb-4 rounded-2xl border border-orange-200 bg-white/90 px-4 py-4 text-right shadow-inner">
+              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Biểu thức</div>
+              <div className="mt-1 min-h-[36px] break-all text-3xl font-semibold text-slate-800">
+                {calcExpr}
+              </div>
+            </div>
+
             <div className="grid grid-cols-4 gap-2 text-base">
               {["7", "8", "9", "/"].map((v) => (
-                <button key={v} className="rounded-lg border border-orange-200 bg-white py-3" type="button" onClick={() => appendCalc(v)}>
+                <button
+                  key={v}
+                  className={`rounded-2xl border py-4 font-semibold shadow-sm transition active:translate-y-[1px] active:scale-[0.98] ${
+                    ["/", "*", "-", "+"].includes(v)
+                      ? "border-orange-300 bg-orange-100 text-orange-700"
+                      : "border-orange-200 bg-white text-slate-800"
+                  }`}
+                  type="button"
+                  onClick={() => appendCalc(v)}>
                   {v}
                 </button>
               ))}
               {["4", "5", "6", "*"].map((v) => (
-                <button key={v} className="rounded-lg border border-orange-200 bg-white py-3" type="button" onClick={() => appendCalc(v)}>
+                <button
+                  key={v}
+                  className={`rounded-2xl border py-4 font-semibold shadow-sm transition active:translate-y-[1px] active:scale-[0.98] ${
+                    ["/", "*", "-", "+"].includes(v)
+                      ? "border-orange-300 bg-orange-100 text-orange-700"
+                      : "border-orange-200 bg-white text-slate-800"
+                  }`}
+                  type="button"
+                  onClick={() => appendCalc(v)}>
                   {v}
                 </button>
               ))}
               {["1", "2", "3", "-"].map((v) => (
-                <button key={v} className="rounded-lg border border-orange-200 bg-white py-3" type="button" onClick={() => appendCalc(v)}>
+                <button
+                  key={v}
+                  className={`rounded-2xl border py-4 font-semibold shadow-sm transition active:translate-y-[1px] active:scale-[0.98] ${
+                    ["/", "*", "-", "+"].includes(v)
+                      ? "border-orange-300 bg-orange-100 text-orange-700"
+                      : "border-orange-200 bg-white text-slate-800"
+                  }`}
+                  type="button"
+                  onClick={() => appendCalc(v)}>
                   {v}
                 </button>
               ))}
-              <button className="rounded-lg border border-orange-200 bg-white py-3" type="button" onClick={() => appendCalc("0")}>
+              <button
+                className="rounded-2xl border border-orange-200 bg-white py-4 font-semibold text-slate-800 shadow-sm transition active:translate-y-[1px] active:scale-[0.98]"
+                type="button"
+                onClick={() => appendCalc("0")}>
                 0
               </button>
-              <button className="rounded-lg border border-orange-200 bg-white py-3" type="button" onClick={() => appendCalc(".")}>
+              <button
+                className="rounded-2xl border border-orange-200 bg-white py-4 font-semibold text-slate-800 shadow-sm transition active:translate-y-[1px] active:scale-[0.98]"
+                type="button"
+                onClick={() => appendCalc(".")}>
                 .
               </button>
-              <button className="rounded-lg border border-orange-200 bg-white py-3" type="button" onClick={backspaceCalc}>
+              <button
+                className="rounded-2xl border border-orange-300 bg-orange-50 py-4 font-semibold text-orange-700 shadow-sm transition active:translate-y-[1px] active:scale-[0.98]"
+                type="button"
+                onClick={backspaceCalc}>
                 Xóa
               </button>
-              <button className="rounded-lg border border-orange-200 bg-white py-3" type="button" onClick={() => appendCalc("+")}>
+              <button
+                className="rounded-2xl border border-orange-300 bg-orange-100 py-4 font-semibold text-orange-700 shadow-sm transition active:translate-y-[1px] active:scale-[0.98]"
+                type="button"
+                onClick={() => appendCalc("+")}>
                 +
               </button>
-              <button className="col-span-2 rounded-lg border border-orange-300 bg-orange-100 py-3" type="button" onClick={clearCalc}>
+              <button
+                className="col-span-2 rounded-2xl border border-slate-200 bg-slate-100 py-4 font-semibold text-slate-700 shadow-sm transition active:translate-y-[1px] active:scale-[0.98]"
+                type="button"
+                onClick={clearCalc}>
                 C
               </button>
-              <button className="col-span-2 rounded-lg border border-orange-500 bg-orange-500 py-3 text-white" type="button" onClick={applyCalc}>
+              <button
+                className="col-span-2 rounded-2xl border border-orange-500 bg-orange-500 py-4 font-semibold text-white shadow-sm transition active:translate-y-[1px] active:scale-[0.98]"
+                type="button"
+                onClick={applyCalc}>
                 =
               </button>
             </div>
